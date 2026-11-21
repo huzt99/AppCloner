@@ -2,7 +2,7 @@ name: Build Flutter APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -26,7 +26,10 @@ jobs:
           channel: 'stable'
 
       - name: Create Android Platform Files if Missing
-        run: flutter create . --platforms=android
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create . --platforms=android --project-name app_cloner
+          fi
 
       - name: Get Dependencies
         run: flutter pub get
@@ -37,5 +40,5 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Official-App-Cloner-Manager-APK
+          name: app-cloner-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
