@@ -79,7 +79,7 @@ fun ClonesScreen(app: AppItem, onBack: () -> Unit) {
     var clones by remember { mutableStateOf(CloneManager.clones(app.pkg)) }
     Scaffold(topBar = {
         TopAppBar(title = { Text(app.label) },
-            navigationIcon = { IconButton(onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "رجوع") } })
+            navigationIcon = { IconButton(onBack) { Icon(Icons.Default.ArrowBack, "رجوع") } })
     }) { pad ->
         Column(Modifier.padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("${clones.size} من ${CloneManager.MAX} نسخ")
