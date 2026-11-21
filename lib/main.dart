@@ -44,6 +44,34 @@ enum AppCategory {
   standard,   // بقية التطبيقات (نسخ لا نهائية)
 }
 
+class CloneItem {
+  final String id;
+  String name;
+  final int index;
+  String? lastOpened;
+
+  CloneItem({
+    required this.id,
+    required this.name,
+    required this.index,
+    this.lastOpened,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'index': index,
+        'lastOpened': lastOpened,
+      };
+
+  factory CloneItem.fromJson(Map<String, dynamic> json) => CloneItem(
+        id: json['id']?.toString() ?? UniqueKey().toString(),
+        name: json['name']?.toString() ?? 'النسخة الرسمية',
+        index: (json['index'] is int) ? json['index'] as int : 1,
+        lastOpened: json['lastOpened']?.toString(),
+      );
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -53,7 +81,8 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<AppInfo> _installedApps = [];
-  Map<String, int> _cloneCounts = {};
+  Map<String, List<CloneItem>> _cloneItems = {};
+  final Set<String> _expandedApps = {};
   bool _isLoading = true;
   String _searchQuery = '';
   String _selectedFilter = 'all'; // all, social, standard, restricted
@@ -81,11 +110,36 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initData() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedClones = prefs.getString('clone_counts');
-    if (savedClones != null) {
-      setState(() {
-        _cloneCounts = Map<String, int>.from(json.decode(savedClones));
+    final savedDetailed = prefs.getString('clone_items_v2');
+    final Map<String, List<CloneItem>> loadedMap = {};
+
+    if (savedDetailed != null) {
+      final decoded = json.decode(savedDetailed) as Map<String, dynamic>;
+      decoded.forEach((pkg, list) {
+        if (list is List) {
+          loadedMap[pkg] = list
+              .map((e) => CloneItem.fromJson(Map<String, dynamic>.from(e)))
+              .toList();
+        }
       });
+    } else {
+      // الحفاظ على السجل القديم (clone_counts) وتحويله تلقائياً دون فقدان أي نسخة
+      final savedClones = prefs.getString('clone_counts');
+      if (savedClones != null) {
+        final oldCounts = Map<String, int>.from(json.decode(savedClones));
+        oldCounts.forEach((pkg, count) {
+          if (count > 0) {
+            loadedMap[pkg] = List.generate(
+              count,
+              (i) => CloneItem(
+                id: '${pkg}_${i + 1}',
+                name: 'النسخة الرسمية #${i + 1}',
+                index: i + 1,
+              ),
+            );
+          }
+        });
+      }
     }
 
     // جلب التطبيقات الرسمية المثبتة على الهاتف (بدون تطبيقات النظام الأساسية)
@@ -93,6 +147,7 @@ class _HomeScreenState extends State<HomeScreen> {
     apps.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
     setState(() {
+      _cloneItems = loadedMap;
       _installedApps = apps;
       _isLoading = false;
     });
@@ -100,7 +155,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _saveClones() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('clone_counts', json.encode(_cloneCounts));
+    final Map<String, dynamic> encodedMap = {};
+    final Map<String, int> countsMap = {};
+
+    _cloneItems.forEach((pkg, items) {
+      encodedMap[pkg] = items.map((e) => e.toJson()).toList();
+      countsMap[pkg] = items.length;
+    });
+
+    await prefs.setString('clone_items_v2', json.encode(encodedMap));
+    await prefs.setString('clone_counts', json.encode(countsMap));
   }
 
   AppCategory _classifyApp(AppInfo app) {
@@ -141,7 +205,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final currentCount = _cloneCounts[app.packageName] ?? 0;
+    final currentList = _cloneItems[app.packageName] ?? [];
+    final currentCount = currentList.length;
 
     if (category == AppCategory.social && currentCount >= 1) {
       _showAlert(
@@ -203,15 +268,22 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             ElevatedButton(
               onPressed: () {
+                final newIndex = currentCount + 1;
+                final newItem = CloneItem(
+                  id: '${app.packageName}_${DateTime.now().millisecondsSinceEpoch}',
+                  name: 'النسخة الرسمية #$newIndex',
+                  index: newIndex,
+                );
                 setState(() {
-                  _cloneCounts[app.packageName] = currentCount + 1;
+                  _cloneItems[app.packageName] = [...currentList, newItem];
+                  _expandedApps.add(app.packageName);
                 });
                 _saveClones();
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      'تمت إضافة النسخة الرسمية #${currentCount + 1} لـ ${app.name}',
+                      'تمت إضافة النسخة الرسمية #$newIndex لـ ${app.name}',
                     ),
                     backgroundColor: Colors.green.shade700,
                   ),
@@ -223,6 +295,75 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  void _openSingleClone(AppInfo app, CloneItem item) {
+    final now = TimeOfDay.now().format(context);
+    setState(() {
+      item.lastOpened = now;
+    });
+    _saveClones();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('فتح ${app.name} (${item.name})'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+    InstalledApps.startApp(app.packageName);
+  }
+
+  void _renameClone(AppInfo app, CloneItem item) {
+    final controller = TextEditingController(text: item.name);
+    showDialog(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          title: const Text('تسمية النسخة'),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              hintText: 'مثلاً: حساب 1 أو نسخة العمل',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (controller.text.trim().isNotEmpty) {
+                  setState(() {
+                    item.name = controller.text.trim();
+                  });
+                  _saveClones();
+                }
+                Navigator.pop(ctx);
+              },
+              child: const Text('حفظ'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _deleteSingleClone(AppInfo app, CloneItem item) {
+    final updatedList = List<CloneItem>.from(_cloneItems[app.packageName] ?? [])
+      ..removeWhere((e) => e.id == item.id);
+
+    setState(() {
+      if (updatedList.isEmpty) {
+        _cloneItems.remove(app.packageName);
+        _expandedApps.remove(app.packageName);
+      } else {
+        _cloneItems[app.packageName] = updatedList;
+      }
+    });
+    _saveClones();
   }
 
   void _showAlert({
@@ -343,7 +484,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         itemBuilder: (context, index) {
                           final app = filteredApps[index];
                           final category = _classifyApp(app);
-                          final cloneCount = _cloneCounts[app.packageName] ?? 0;
+                          final clones = _cloneItems[app.packageName] ?? [];
+                          final cloneCount = clones.length;
+                          final isExpanded =
+                              _expandedApps.contains(app.packageName);
                           final banRisk = _hasBanRisk(app, category);
 
                           return Card(
@@ -426,47 +570,177 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ),
                                     ),
 
-                                  // أزرار التحكم والنسخ
+                                  // أزرار التحكم والنسخ (مرتبة بدون تداخل على الطرف)
                                   if (category != AppCategory.restricted) ...[
                                     const Divider(height: 20),
                                     Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.spaceBetween,
                                       children: [
-                                        Text(
-                                          category == AppCategory.social
-                                              ? 'النسخ المنشأة: $cloneCount / 1'
-                                              : 'النسخ المنشأة: $cloneCount (مفتوح)',
-                                          style: const TextStyle(
-                                              fontSize: 12.5,
-                                              color: Colors.lightBlueAccent),
-                                        ),
-                                        Row(
-                                          children: [
-                                            if (cloneCount > 0)
-                                              OutlinedButton.icon(
-                                                onPressed: () {
-                                                  InstalledApps.startApp(
-                                                      app.packageName);
-                                                },
-                                                icon: const Icon(
-                                                    Icons.open_in_new,
-                                                    size: 16),
-                                                label: const Text('فتح الرسمي'),
+                                        Expanded(
+                                          child: InkWell(
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            onTap: cloneCount > 0
+                                                ? () {
+                                                    setState(() {
+                                                      if (isExpanded) {
+                                                        _expandedApps.remove(
+                                                            app.packageName);
+                                                      } else {
+                                                        _expandedApps.add(
+                                                            app.packageName);
+                                                      }
+                                                    });
+                                                  }
+                                                : null,
+                                            child: Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 6,
+                                                      horizontal: 4),
+                                              child: Row(
+                                                children: [
+                                                  Flexible(
+                                                    child: Text(
+                                                      category ==
+                                                              AppCategory.social
+                                                          ? 'النسخ المنشأة: $cloneCount / 1'
+                                                          : 'النسخ المنشأة: $cloneCount',
+                                                      style: const TextStyle(
+                                                        fontSize: 12.5,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        color: Colors
+                                                            .lightBlueAccent,
+                                                      ),
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                  if (cloneCount > 0) ...[
+                                                    const SizedBox(width: 4),
+                                                    Icon(
+                                                      isExpanded
+                                                          ? Icons
+                                                              .keyboard_arrow_up
+                                                          : Icons
+                                                              .keyboard_arrow_down,
+                                                      size: 20,
+                                                      color: Colors
+                                                          .lightBlueAccent,
+                                                    ),
+                                                  ],
+                                                ],
                                               ),
-                                            const SizedBox(width: 8),
-                                            ElevatedButton.icon(
-                                              onPressed: () =>
-                                                  _handleCreateClone(
-                                                      app, category),
-                                              icon: const Icon(Icons.copy_all,
-                                                  size: 16),
-                                              label: const Text('نسخ'),
                                             ),
-                                          ],
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        ElevatedButton.icon(
+                                          onPressed: () =>
+                                              _handleCreateClone(app, category),
+                                          icon: const Icon(Icons.copy_all,
+                                              size: 16),
+                                          label: const Text('نسخ'),
                                         ),
                                       ],
                                     ),
+
+                                    // القائمة المنسدلة للنسخ المستنسخة جوا نفس التطبيق
+                                    if (isExpanded && clones.isNotEmpty)
+                                      Container(
+                                        margin: const EdgeInsets.only(top: 10),
+                                        padding: const EdgeInsets.all(8),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF0F172A),
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          border: Border.all(
+                                              color: Colors.white12),
+                                        ),
+                                        child: Column(
+                                          children: clones.map((item) {
+                                            return Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 4),
+                                              child: Row(
+                                                children: [
+                                                  const Icon(
+                                                    Icons.layers_outlined,
+                                                    size: 18,
+                                                    color: Colors.greenAccent,
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        Text(
+                                                          item.name,
+                                                          style:
+                                                              const TextStyle(
+                                                            fontSize: 13,
+                                                            fontWeight:
+                                                                FontWeight.bold,
+                                                          ),
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                        ),
+                                                        if (item.lastOpened !=
+                                                            null)
+                                                          Text(
+                                                            'آخر فتح: ${item.lastOpened}',
+                                                            style:
+                                                                const TextStyle(
+                                                              fontSize: 11,
+                                                              color: Colors
+                                                                  .white54,
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  IconButton(
+                                                    onPressed: () =>
+                                                        _renameClone(app, item),
+                                                    icon: const Icon(
+                                                        Icons.edit_outlined,
+                                                        size: 18),
+                                                    tooltip: 'تسمية',
+                                                    visualDensity:
+                                                        VisualDensity.compact,
+                                                  ),
+                                                  IconButton(
+                                                    onPressed: () =>
+                                                        _deleteSingleClone(
+                                                            app, item),
+                                                    icon: const Icon(
+                                                      Icons.delete_outline,
+                                                      size: 18,
+                                                      color: Colors.redAccent,
+                                                    ),
+                                                    tooltip: 'حذف',
+                                                    visualDensity:
+                                                        VisualDensity.compact,
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  OutlinedButton.icon(
+                                                    onPressed: () =>
+                                                        _openSingleClone(
+                                                            app, item),
+                                                    icon: const Icon(
+                                                        Icons.open_in_new,
+                                                        size: 15),
+                                                    label: const Text('فتح'),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ),
+                                      ),
                                   ],
                                 ],
                               ),
