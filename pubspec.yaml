@@ -1,5 +1,5 @@
-name: official_app_cloner_manager
-description: مدير النسخ الرسمية للتطبيقات مع قواعد الحماية والتحذير من الحظر.
+name: app_cloner
+description: Official app cloner policy and management tool built with Flutter.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,13 +9,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  installed_apps: ^1.5.0
-  shared_preferences: ^2.2.2
+  cupertino_icons: ^1.0.8
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
